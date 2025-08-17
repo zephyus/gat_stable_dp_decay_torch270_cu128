@@ -1,0 +1,11 @@
+# ───────── 不該進 Git 的大型或自動產生檔─────────
+.venv/
+__pycache__/
+*.so
+*.dylib
+*.dll
+training/
+*.csv
+*.xml
+*.tfevents*
+*.pt

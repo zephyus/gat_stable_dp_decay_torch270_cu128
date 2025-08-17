@@ -1,0 +1,13 @@
+CUDA Available: True
+Available Devices: 2
+Current Device: 0
+Device Name: NVIDIA GeForce RTX 3070 Ti
+Traceback (most recent call last):
+  File "test.py", line 22, in <module>
+    from agents.models import IA2C, IA2C_FP, MA2C_NC, IA2C_CU, MA2C_CNET, MA2C_DIAL, MA2C_NCLM
+  File "/workspace/my_deeprl_network/agents/models.py", line 11, in <module>
+    from agents.policies import (LstmPolicy, FPPolicy, ConsensusPolicy, NCMultiAgentPolicy,
+  File "/workspace/my_deeprl_network/agents/policies.py", line 73
+    summary_writer.add_scalar('loss/{}_entropy_loss'.format(self.name), self.entropy_loss, global_step=global_step)
+                 ^
+IndentationError: expected an indented block

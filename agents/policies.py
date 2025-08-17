@@ -69,14 +69,17 @@ class Policy(nn.Module):
         return policy_loss, value_loss, entropy_loss
 
     def _update_tensorboard(self, summary_writer, global_step):
-        summary_writer.add_scalar('loss/{}_entropy_loss'.format(self.name), self.entropy_loss,
-                                  global_step=global_step)
-        summary_writer.add_scalar('loss/{}_policy_loss'.format(self.name), self.policy_loss,
-                                  global_step=global_step)
-        summary_writer.add_scalar('loss/{}_value_loss'.format(self.name), self.value_loss,
-                                  global_step=global_step)
-        summary_writer.add_scalar('loss/{}_total_loss'.format(self.name), self.loss,
-                                  global_step=global_step)
+        # Keep original name-scoped tags for backward compatibility
+        summary_writer.add_scalar('loss/{}_entropy_loss'.format(self.name), self.entropy_loss, global_step=global_step)
+        summary_writer.add_scalar('loss/{}_policy_loss'.format(self.name), self.policy_loss,   global_step=global_step)
+        summary_writer.add_scalar('loss/{}_value_loss'.format(self.name),  self.value_loss,    global_step=global_step)
+        summary_writer.add_scalar('loss/{}_total_loss'.format(self.name),  self.loss,          global_step=global_step)
+
+        # Also log generic tags to match transformer_v0.2_autosave "tsboard" layout
+        summary_writer.add_scalar('loss/entropy_loss', self.entropy_loss, global_step=global_step)
+        summary_writer.add_scalar('loss/policy_loss',  self.policy_loss,  global_step=global_step)
+        summary_writer.add_scalar('loss/value_loss',   self.value_loss,   global_step=global_step)
+        summary_writer.add_scalar('loss/total_loss',   self.loss,         global_step=global_step)
 
 
 class LstmPolicy(Policy):
@@ -109,6 +112,27 @@ class LstmPolicy(Policy):
                            torch.from_numpy(Advs).float())
         self.loss = self.policy_loss + self.value_loss + self.entropy_loss
         self.loss.backward()
+        # --- Diagnostics for architecture tuning ---
+        try:
+            with torch.no_grad():
+                Rs_t = torch.as_tensor(Rs, dtype=torch.float32, device=vs.device)
+                # Align shapes if needed
+                if Rs_t.dim() != vs.dim():
+                    Rs_t = Rs_t.view_as(vs)
+                resid = Rs_t - vs
+                var_y = torch.var(Rs_t)
+                var_resid = torch.var(resid)
+                ev = float(1.0 - (var_resid / (var_y + 1e-8))) if var_y > 1e-8 else 0.0
+                entropy_vals = actor_dist.entropy()
+                ent_mean = float(entropy_vals.mean().item())
+                eff_actions = float(torch.exp(entropy_vals.mean()).item())
+                self._diag_metrics = {
+                    'explained_variance': ev,
+                    'policy_entropy_mean': ent_mean,
+                    'policy_effective_actions': eff_actions,
+                }
+        except Exception:
+            self._diag_metrics = None
         if summary_writer is not None:
             self._update_tensorboard(summary_writer, global_step)
 
@@ -186,18 +210,10 @@ class NCMultiAgentPolicy(Policy):
         self._reset()
         self.zero_pad = nn.Parameter(torch.zeros(1, 2*self.n_fc), requires_grad=False)
         self.latest_attention_scores = None
-        
-        use_gat_env_value = os.getenv('USE_GAT', '1')
-        logging.info(f"DEBUG: os.getenv('USE_GAT', '1') returned: '{use_gat_env_value}' (type: {type(use_gat_env_value)}")
-                
-        self.use_gat = use_gat_env_value == '1'
-        logging.info(f"DEBUG: self.use_gat evaluated to: {self.use_gat}")
-
-        if not self.use_gat:
-            logging.info(f"DEBUG: Overwriting self.gat_layer with nn.Identity because self.use_gat is False.")
-            self.gat_layer = nn.Identity()
-            
-        logging.info(f"DEBUG: Final type of self.gat_layer: {type(self.gat_layer)}") 
+    # Force-enable GAT irrespective of environment variable (user requirement: always use GAT)
+    self.use_gat = True
+    logging.info("DEBUG: Forcing self.use_gat = True (ignoring USE_GAT env).")
+    logging.info(f"DEBUG: Final type of self.gat_layer: {type(self.gat_layer)}") 
 
     def backward(self, obs, fps, acts, dones, Rs, Advs,
                  e_coef, v_coef, summary_writer=None, global_step=None):
@@ -224,6 +240,52 @@ class NCMultiAgentPolicy(Policy):
             self.entropy_loss += entropy_loss_i
         self.loss = self.policy_loss + self.value_loss + self.entropy_loss
         self.loss.backward()
+        # --- Diagnostics for architecture tuning ---
+        try:
+            with torch.no_grad():
+                # Stack critic targets/preds to (T*N,) for metrics
+                Rs_flat = Rs.view(-1)
+                vs_flat = torch.stack([v.view(-1) for v in vs], dim=1).reshape(-1)
+                var_y = torch.var(Rs_flat)
+                var_resid = torch.var(Rs_flat - vs_flat)
+                ev = float(1.0 - (var_resid / (var_y + 1e-8))) if var_y > 1e-8 else 0.0
+                # Mean policy entropy across agents and time
+                ent_list = []
+                for i in range(self.n_agent):
+                    dist_i = torch.distributions.categorical.Categorical(logits=ps[i])
+                    ent_list.append(dist_i.entropy())
+                ent_all = torch.stack([e.reshape(-1) for e in ent_list], dim=1)
+                ent_mean = float(ent_all.mean().item())
+                eff_actions = float(torch.exp(ent_all.mean()).item())
+                self._diag_metrics = {
+                    'explained_variance': ev,
+                    'policy_entropy_mean': ent_mean,
+                    'policy_effective_actions': eff_actions,
+                }
+        except Exception:
+            self._diag_metrics = None
+        # --- Diagnostics for architecture tuning (NCLM) ---
+        try:
+            with torch.no_grad():
+                Rs_flat = Rs.view(-1)
+                vs_flat = torch.stack([v.view(-1) for v in vs], dim=1).reshape(-1)
+                var_y = torch.var(Rs_flat)
+                var_resid = torch.var(Rs_flat - vs_flat)
+                ev = float(1.0 - (var_resid / (var_y + 1e-8))) if var_y > 1e-8 else 0.0
+                ent_list = []
+                for i in range(self.n_agent):
+                    dist_i = torch.distributions.categorical.Categorical(logits=ps[i])
+                    ent_list.append(dist_i.entropy())
+                ent_all = torch.stack([e.reshape(-1) for e in ent_list], dim=1)
+                ent_mean = float(ent_all.mean().item())
+                eff_actions = float(torch.exp(ent_all.mean()).item())
+                self._diag_metrics = {
+                    'explained_variance': ev,
+                    'policy_entropy_mean': ent_mean,
+                    'policy_effective_actions': eff_actions,
+                }
+        except Exception:
+            self._diag_metrics = None
         if summary_writer is not None:
             self._update_tensorboard(summary_writer, global_step)
             if self.use_gat and self.latest_attention_scores is not None:

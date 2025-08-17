@@ -9,6 +9,7 @@ import subprocess
 import copy
 from queue import PriorityQueue
 import sys # Import sys for StreamHandler
+import torch
 from agents.gat import GraphAttention
 
 
@@ -421,6 +422,45 @@ class Trainer():
                                 total_norm += param_norm.item() ** 2
                         total_norm = total_norm ** 0.5
                         self.summary_writer.add_scalar('train/grad_norm', total_norm, global_step)
+
+                        # Log max absolute parameter value for debugging parity with transformer project
+                        try:
+                            max_param = max(p.abs().max().item() for p in self.model.parameters())
+                            self.summary_writer.add_scalar('debug/max_param', max_param, global_step)
+
+                            # Architecture diagnostics from policy (if available)
+                            diag = getattr(getattr(self.model, 'policy', None), '_diag_metrics', None)
+                            if diag:
+                                ev = float(diag.get('explained_variance', 0.0))
+                                ent_mean = float(diag.get('policy_entropy_mean', 0.0))
+                                eff_actions = float(diag.get('policy_effective_actions', 0.0))
+                                self.summary_writer.add_scalar('diag/explained_variance', ev, global_step)
+                                self.summary_writer.add_scalar('diag/policy_entropy_mean', ent_mean, global_step)
+                                self.summary_writer.add_scalar('diag/policy_effective_actions', eff_actions, global_step)
+                                # Generate concise suggestion for LLM auto-tuning
+                                try:
+                                    import math
+                                    max_ent = math.log(max(2, getattr(self.model, 'n_a', getattr(self.env, 'n_a', 2))))
+                                    ent_norm = ent_mean / (max_ent + 1e-8)
+                                    suggestions = []
+                                    if ev < 0.1:
+                                        suggestions.append('critic underfit: increase value capacity (n_h), add LayerNorm/Residual, or raise v_coef; consider lower dropout')
+                                    elif ev > 0.8:
+                                        suggestions.append('critic strong: optionally lower v_coef or reduce value capacity')
+                                    if ent_norm < 0.2 or eff_actions < 1.5:
+                                        suggestions.append('policy collapsed: raise e_coef, increase attention heads or dropout slightly, or add param noise')
+                                    elif ent_norm > 0.8:
+                                        suggestions.append('policy too stochastic: lower e_coef or increase capacity to sharpen decisions')
+                                    score = 0.7 * max(0.0, min(1.0, ev)) + 0.3 * max(0.0, min(1.0, ent_norm))
+                                    suggestions.append(f'composite S=0.7*EV+0.3*Hnorm={score:.3f} (EV={ev:.3f}, Hnorm={ent_norm:.3f})')
+                                    text = '; '.join(suggestions)
+                                    logging.info(f"[ArchSuggest][step={global_step}] {text}")
+                                    self.summary_writer.add_text('suggestions/arch_tuning', text, global_step)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            # Safety: avoid crashing logging if params are unavailable
+                            pass
 
                         # periodically flush TensorBoard writer
                         if global_step % 50 == 0 and self.summary_writer is not None:
