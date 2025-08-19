@@ -2,20 +2,25 @@ import numpy as np
 import torch
 import torch.nn as nn
 import logging
-import sys # Import sys for StreamHandler
+import sys  # Import sys for StreamHandler
+
+# Unified device (compat upgrade; avoid scattered .cuda() calls)
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 """
 initializers
 """
 def init_layer(layer, layer_type):
+    """Initializer without using .data (compat for newer PyTorch)."""
     if layer_type == 'fc':
-        nn.init.orthogonal_(layer.weight.data)
-        nn.init.constant_(layer.bias.data, 0)
+        nn.init.orthogonal_(layer.weight)
+        if layer.bias is not None:
+            nn.init.constant_(layer.bias, 0)
     elif layer_type == 'lstm':
-        nn.init.orthogonal_(layer.weight_ih.data)
-        nn.init.orthogonal_(layer.weight_hh.data)
-        nn.init.constant_(layer.bias_ih.data, 0)
-        nn.init.constant_(layer.bias_hh.data, 0)
+        nn.init.orthogonal_(layer.weight_ih)
+        nn.init.orthogonal_(layer.weight_hh)
+        nn.init.constant_(layer.bias_ih, 0)
+        nn.init.constant_(layer.bias_hh, 0)
 
 """
 layer helpers
@@ -28,37 +33,44 @@ def batch_to_seq(x):
 
 
 def run_rnn(layer, xs, dones, s):
+    """Device-agnostic RNN rollout (removes hardcoded .cuda())."""
     xs = batch_to_seq(xs)
-    # need dones to reset states
     dones = batch_to_seq(dones)
-    n_in = int(xs[0].shape[1])
-    n_out = int(s.shape[0]) // 2
     s = torch.unsqueeze(s, 0)
     h, c = torch.chunk(s, 2, dim=1)
-    h = h.cuda()
-    c = c.cuda()
+    target_device = xs[0].device
+    h = h.to(target_device)
+    c = c.to(target_device)
     outputs = []
-    for ind, (x, done) in enumerate(zip(xs, dones)):
-        c = c * (1-done)
-        h = h * (1-done)
+    for x, done in zip(xs, dones):
+        done = done.to(target_device)
+        c = c * (1 - done)
+        h = h * (1 - done)
         h, c = layer(x, (h, c))
         outputs.append(h)
     s = torch.cat([h, c], dim=1)
     return torch.cat(outputs), torch.squeeze(s)
 
 
-def one_hot(x, oh_dim, dim=-1):
-    oh_shape = list(x.shape)
+def one_hot(x, oh_dim, dim=-1, device=None, dtype=torch.float32):
+    """Device-aware one_hot (replaces later .cuda() chains)."""
+    if device is None:
+        if isinstance(x, torch.Tensor):
+            device = x.device
+        else:
+            device = DEVICE
+    x_t = x if isinstance(x, torch.Tensor) else torch.as_tensor(x, device=device)
+    oh_shape = list(x_t.shape)
     if dim == -1:
         oh_shape.append(oh_dim)
     else:
-        oh_shape = oh_shape[:dim+1] + [oh_dim] + oh_shape[dim+1:]
-    x_oh = torch.zeros(oh_shape)
-    x = torch.unsqueeze(x, -1)
+        oh_shape = oh_shape[:dim + 1] + [oh_dim] + oh_shape[dim + 1:]
+    x_oh = torch.zeros(oh_shape, device=device, dtype=dtype)
+    x_t = torch.unsqueeze(x_t, -1)
     if dim == -1:
-        x_oh = x_oh.scatter(dim, x, 1)
+        x_oh = x_oh.scatter(dim, x_t, 1)
     else:
-        x_oh = x_oh.scatter(dim+1, x, 1)
+        x_oh = x_oh.scatter(dim + 1, x_t, 1)
     return x_oh
 
 
@@ -117,7 +129,7 @@ class OnPolicyBuffer(TransBuffer):
         Rs = np.array(self.Rs, dtype=np.float32)
         Advs = np.array(self.Advs, dtype=np.float32)
         # use pre-step dones here
-        dones = np.array(self.dones[:-1], dtype=np.bool)
+        dones = np.array(self.dones[:-1], dtype=bool)
         self.reset(self.dones[-1])
         return obs, nas, acts, dones, Rs, Advs
 
@@ -191,7 +203,7 @@ class MultiAgentOnPolicyBuffer(OnPolicyBuffer):
         acts = np.transpose(np.array(self.acts, dtype=np.int32))
         Rs = np.array(self.Rs, dtype=np.float32)
         Advs = np.array(self.Advs, dtype=np.float32)
-        dones = np.array(self.dones[:-1], dtype=np.bool)
+        dones = np.array(self.dones[:-1], dtype=bool)
         self.reset(self.dones[-1])
         return obs, policies, acts, dones, Rs, Advs
 
