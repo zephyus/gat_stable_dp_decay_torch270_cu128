@@ -852,3 +852,33 @@ Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd
        0.20805861], dtype=float32), array([0.09446067, 0.34007558, 0.5654637 ], dtype=float32), array([0.07727461, 0.9227254 ], dtype=float32), array([0.2503228 , 0.2477211 , 0.2507184 , 0.25123766], dtype=float32), array([0.4206474 , 0.3666239 , 0.17551075, 0.03721793], dtype=float32), array([0.31268755, 0.36607185, 0.17956927, 0.14167131], dtype=float32), array([0.04971787, 0.70808285, 0.01280699, 0.22939226], dtype=float32), array([0.72094995, 0.10082222, 0.11074043, 0.06748737], dtype=float32), array([0.05018198, 0.05002825, 0.02804052, 0.80930185, 0.0186991 ,
        0.04374823], dtype=float32), array([0.0510895 , 0.16415788, 0.7847526 ], dtype=float32)], r: -719.00, train r: -25.68, done: False
 2025-08-17 21:46:20,440 [DEBUG] step: 20040
+2025-08-17 21:46:50,437 [DEBUG] step: 20160
+Arrived :  0
+2025-08-17 21:47:00,074 [DEBUG] round 28
+Loading configuration ... done.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/additional_file.xsd', will try website lookup.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/routes_file.xsd', will try website lookup.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/net_file.xsd', will try website lookup.
+2025-08-17 21:47:16,107 [DEBUG] step: 20280
+2025-08-17 21:47:41,820 [DEBUG] step: 20400
+2025-08-17 21:48:09,319 [DEBUG] step: 20520
+2025-08-17 21:48:38,123 [DEBUG] step: 20640
+2025-08-17 21:49:08,189 [DEBUG] step: 20760
+2025-08-17 21:49:38,195 [DEBUG] step: 20880
+Arrived :  0
+2025-08-17 21:49:47,797 [DEBUG] round 29
+Loading configuration ... done.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/additional_file.xsd', will try website lookup.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/routes_file.xsd', will try website lookup.
+Warning: Cannot read local schema '/root/miniconda/envs/py36/share/sumo/data/xsd/net_file.xsd', will try website lookup.
+2025-08-17 21:50:03,859 [INFO] Training: global step 21000, episode step 120,
+                                   ob: [array([  0.,   0.,   0.,   0., 115., 115., 115.,  20.,  20.,  41.,  41.,
+         3.,   3.,   3.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([ 0.,  0.,  0.,  0., 67., 67.]), array([0., 0., 0.]), array([0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0.]), array([ 0.,  0.,  0.,  0.,  0.,  0., 38., 38., 38.,  0.,  0.,  0.]), array([0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+       0.]), array([0., 0., 0., 0., 0., 0.]), array([0., 0.]), array([0., 0., 0., 0., 0., 0., 7., 7., 7., 0., 0., 0.]), array([0., 0., 0., 0., 4., 4.]), array([0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 7., 7., 7.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 1., 1.]), array([ 0.,  0.,  0.,  0., 54., 54.]), array([43., 43.,  0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]), array([ 0.,  0.,  0.,  0.,  0.,  0., 25., 25., 25.,  0.,  0.,  0.]), array([0., 0., 0., 0., 0., 0., 0., 0., 0., 2., 2., 2.]), array([ 0.,  0.,  0.,  0.,  0.,  0.,  0., 22.,  0.,  0.,  0.,  7.,  7.,
+        0.,  0., 85., 85., 85.,  0.,  0.,  0.,  0.]), array([  0.,   0.,   0.,   0., 185., 185.,   0.,   0.,   0.])], a: [3 2 0 1 0 1 1 2 1 0 0 1 2 0 0 1 0 2 2 2 1 2 1 2 1 0 3 2], pi: [array([0.37637696, 0.02699142, 0.23360328, 0.24815176, 0.04442991,
+       0.07044671], dtype=float32), array([0.1945834 , 0.21050334, 0.40508765, 0.1898256 ], dtype=float32), array([0.9391758 , 0.06082428], dtype=float32), array([0.49828783, 0.50171214], dtype=float32), array([0.8450113, 0.1549887], dtype=float32), array([0.06122859, 0.70116633, 0.13933451, 0.0982706 ], dtype=float32), array([0.4431269, 0.5568731], dtype=float32), array([0.33485857, 0.07414883, 0.4080173 , 0.18297523], dtype=float32), array([0.52475023, 0.47524977], dtype=float32), array([0.25580484, 0.06181763, 0.05036056, 0.2703244 , 0.3616926 ],
+      dtype=float32), array([0.6223699, 0.3776301], dtype=float32), array([0.50369346, 0.4963065 ], dtype=float32), array([0.3120512 , 0.05231231, 0.47406647, 0.16156991], dtype=float32), array([0.48144534, 0.5185547 ], dtype=float32), array([0.81412584, 0.1858741 ], dtype=float32), array([0.09635288, 0.6623419 , 0.08981978, 0.1514854 ], dtype=float32), array([0.4961439, 0.5038561], dtype=float32), array([0.5268569 , 0.04292455, 0.43021855], dtype=float32), array([0.03838758, 0.18931288, 0.15850164, 0.17080407, 0.254472  ,
+       0.18852185], dtype=float32), array([0.10712195, 0.3146642 , 0.5782139 ], dtype=float32), array([0.08926229, 0.9107377 ], dtype=float32), array([0.2503792 , 0.24789755, 0.25065026, 0.251073  ], dtype=float32), array([0.47132626, 0.3217488 , 0.16817081, 0.03875418], dtype=float32), array([0.18253694, 0.45617875, 0.18585369, 0.17543064], dtype=float32), array([0.02452582, 0.751508  , 0.01585386, 0.20811233], dtype=float32), array([0.6430342 , 0.08877224, 0.1744511 , 0.0937424 ], dtype=float32), array([0.06895788, 0.04808547, 0.01409013, 0.7619503 , 0.03360722,
+       0.07330902], dtype=float32), array([0.05848238, 0.0742491 , 0.8672685 ], dtype=float32)], r: -179.00, train r: -6.39, done: False
+2025-08-17 21:50:03,948 [DEBUG] step: 21000
+2025-08-17 21:50:12,690 [INFO] Step: 21000    | GAT Dropout: 0.195800 | LR: 5.000000e-04
