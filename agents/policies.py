@@ -54,7 +54,8 @@ class Policy(nn.Module):
                     parts.append(torch.squeeze(one_hot(na_val, na_dim), dim=1))
                 na_sparse = torch.cat(parts, dim=1)
             h = torch.cat([h, na_sparse.to(h.device)], dim=1)
-        return self.critic_head(h).squeeze(-1)
+    # Legacy squeeze semantics (drop all singleton dims; may remove batch dim when B==1)
+        return self.critic_head(h).squeeze()
 
     def _run_loss(self, actor_dist, e_coef, v_coef, vs, As, Rs, Advs):
         # Support both single-agent (actor_head) and multi-agent (actor_heads list) policies
@@ -104,7 +105,9 @@ class LstmPolicy(Policy):
         xs = self._encode_ob(obs_t)
         hs, new_states = run_rnn(self.lstm_layer, xs, dones_t, self.states_bw)
         self.states_bw = new_states.detach()
-        actor_dist = torch.distributions.categorical.Categorical(logits=self.actor_head(hs))
+    # Revert to old ablation behavior: feed log_softmax outputs as logits (legacy semantics)
+    # NOTE: This reproduces original distribution shaping even though it applies log_softmax twice internally.
+        actor_dist = torch.distributions.categorical.Categorical(logits=F.log_softmax(self.actor_head(hs), dim=1))
         vs = self._run_critic_head(hs, nactions)
         self.policy_loss, self.value_loss, self.entropy_loss = self._run_loss(
             actor_dist, e_coef, v_coef, vs,
@@ -174,7 +177,7 @@ class FPPolicy(LstmPolicy):
 
 
 class NCMultiAgentPolicy(Policy):
-    def __init__(self, n_s, n_a, n_agent, n_step, neighbor_mask, n_fc=64, n_h=64, n_s_ls=None, n_a_ls=None, model_config=None, identical=True):
+    def __init__(self, n_s, n_a, n_agent, n_step, neighbor_mask, n_fc=64, n_h=64, n_s_ls=None, n_a_ls=None, model_config=None, identical=True, per_agent_reset=None):
         super().__init__(n_a, n_s, n_step, 'nc', None, identical)
         if not self.identical:
             self.n_s_ls = n_s_ls
@@ -184,6 +187,22 @@ class NCMultiAgentPolicy(Policy):
         self.n_fc = n_fc
         self.n_h = n_h
         self.model_config = model_config
+        # Reset semantics: legacy (broadcast single done to all agents) vs per-agent.
+        # Priority: explicit arg > model_config option > env var > default legacy(False).
+        if per_agent_reset is None and self.model_config:
+            # model_config is a SectionProxy; keys accessed directly
+            try:
+                if 'per_agent_reset' in self.model_config:
+                    per_agent_reset = self.model_config.getboolean('per_agent_reset')
+            except Exception:
+                per_agent_reset = None
+        if per_agent_reset is None:
+            env_val = os.getenv('PER_AGENT_RESET', '').strip()
+            if env_val != '':
+                per_agent_reset = env_val in ['1', 'true', 'True', 'YES', 'yes']
+        if per_agent_reset is None:
+            per_agent_reset = False  # legacy default
+        self.per_agent_reset = per_agent_reset
         self._init_net()
         # allocate zero_pad before moving to device for consistent placement
         self.zero_pad = nn.Parameter(torch.zeros(1, 2 * self.n_fc, device=DEVICE), requires_grad=False)
@@ -333,11 +352,12 @@ class NCMultiAgentPolicy(Policy):
     def _run_actor_heads(self, hs, detach=False):
         ps = []
         for i in range(self.n_agent):
+            out = self.actor_heads[i](hs[i])
             if detach:
-                ps.append(F.softmax(self.actor_heads[i](hs[i]), dim=1).squeeze().cpu().detach().numpy())
+                ps.append(F.softmax(out, dim=1).squeeze().cpu().detach().numpy())
             else:
-                # return raw logits (Categorical(logits=...) will apply softmax internally)
-                ps.append(self.actor_heads[i](hs[i]))
+                # Legacy semantics: feed normalized log-probs as logits (stable, constant-shift invariant)
+                ps.append(F.log_softmax(out, dim=1))
         return ps
 
     def _run_comm_layers(self, obs, dones, fps, states):
@@ -351,14 +371,31 @@ class NCMultiAgentPolicy(Policy):
         outputs = []
         for x, p, done in zip(obs_seq, fp_seq, done_seq):
             done = done.to(device)
-            # normalize done shape to (1,1) for broadcasting; supports (1,), (1,n_agent), scalar
-            if done.dim() == 1:
-                done_norm = done.view(1, 1)
-            elif done.dim() == 2 and done.size(1) != 1:
-                # take first entry as global done (original logic treated done scalar)
-                done_norm = done[:, :1]
+            # Reset semantics branch:
+            # per_agent_reset=True  -> interpret done as vector (new behavior)
+            # per_agent_reset=False -> broadcast first element/scalar to all agents (legacy behavior)
+            if self.per_agent_reset:
+                # Accept shapes: (1,n_agent) or (n_agent,) or (1,1). Produce per-agent mask of shape (n_agent,1).
+                if done.dim() == 1:          # (n_agent,)
+                    done_vec = done.view(1, -1)
+                elif done.dim() == 2:        # (1,n_agent) or (1,1)
+                    done_vec = done
+                else:                        # scalar fallback
+                    done_vec = done.view(1, 1)
+                if done_vec.size(1) == 1 and h.size(0) > 1:
+                    done_vec = done_vec.expand(1, h.size(0))
+                per_done = done_vec.view(-1)  # length = n_agent
+                broadcast_mask = None  # unused in this mode
             else:
-                done_norm = done
+                # Legacy: reduce to single scalar (use first element) then broadcast
+                if done.dim() == 0:
+                    done_scalar = done.view(1, 1)
+                elif done.dim() == 1:          # (n_agent,) -> take first
+                    done_scalar = done[:1].view(1, 1)
+                else:                          # (1,1) or (1,n_agent)
+                    done_scalar = done[:, :1]
+                per_done = None
+                broadcast_mask = (1 - done_scalar).view(1, 1)
             x = x.to(device).squeeze(0)
             p = p.to(device).squeeze(0)
             s_list = []
@@ -385,13 +422,24 @@ class NCMultiAgentPolicy(Policy):
                 s_all = self.gat_layer(s_all)
                 self.latest_attention_scores = None
             next_h, next_c = [], []
-            for i in range(self.n_agent):
-                s_i = s_all[i].unsqueeze(0)
-                h_i = h[i].unsqueeze(0) * (1 - done_norm)
-                c_i = c[i].unsqueeze(0) * (1 - done_norm)
-                nh_i, nc_i = self.lstm_layers[i](s_i, (h_i, c_i))
-                next_h.append(nh_i)
-                next_c.append(nc_i)
+            # Apply masking according to chosen reset semantics
+            if self.per_agent_reset:
+                for i in range(self.n_agent):
+                    s_i = s_all[i].unsqueeze(0)
+                    mask_i = (1 - per_done[i]).view(1, 1)
+                    h_i = h[i].unsqueeze(0) * mask_i
+                    c_i = c[i].unsqueeze(0) * mask_i
+                    nh_i, nc_i = self.lstm_layers[i](s_i, (h_i, c_i))
+                    next_h.append(nh_i)
+                    next_c.append(nc_i)
+            else:
+                for i in range(self.n_agent):
+                    s_i = s_all[i].unsqueeze(0)
+                    h_i = h[i].unsqueeze(0) * broadcast_mask
+                    c_i = c[i].unsqueeze(0) * broadcast_mask
+                    nh_i, nc_i = self.lstm_layers[i](s_i, (h_i, c_i))
+                    next_h.append(nh_i)
+                    next_c.append(nc_i)
             h, c = torch.cat(next_h), torch.cat(next_c)
             outputs.append(h.unsqueeze(0))
         outputs = torch.cat(outputs)
@@ -409,9 +457,8 @@ class NCMultiAgentPolicy(Policy):
                 h_i = torch.cat([hs[i]] + na_i_ls, dim=1)
             else:
                 h_i = hs[i]
+            # Legacy squeeze semantics to match pre-upgrade behavior
             v_i = self.critic_heads[i](h_i).squeeze()
-            # keep only last dim (B,1)->(B); avoid dropping batch when B=1 unintentionally
-            v_i = v_i if v_i.dim() == 1 else v_i.squeeze(-1)
             vs.append(v_i.cpu().detach().numpy() if detach else v_i)
         return vs
 
@@ -427,7 +474,7 @@ class NCMultiAgentPolicy(Policy):
 
 
 class NCLMMultiAgentPolicy(NCMultiAgentPolicy):
-    def __init__(self, n_s, n_a, n_agent, n_step, neighbor_mask, n_fc=64, n_h=64, n_s_ls=None, n_a_ls=None, groups=0, identical=True):
+    def __init__(self, n_s, n_a, n_agent, n_step, neighbor_mask, n_fc=64, n_h=64, n_s_ls=None, n_a_ls=None, groups=0, identical=True, per_agent_reset=None):
         Policy.__init__(self, n_a, n_s, n_step, 'nclm', None, identical)
         if not self.identical:
             self.n_s_ls = n_s_ls
@@ -437,6 +484,14 @@ class NCLMMultiAgentPolicy(NCMultiAgentPolicy):
         self.groups = groups
         self.n_fc = n_fc
         self.n_h = n_h
+        # Mirror same reset semantics logic as NCMultiAgentPolicy (since we bypass its __init__)
+        if per_agent_reset is None:
+            env_val = os.getenv('PER_AGENT_RESET', '').strip()
+            if env_val != '':
+                per_agent_reset = env_val in ['1', 'true', 'True', 'YES', 'yes']
+        if per_agent_reset is None:
+            per_agent_reset = False
+        self.per_agent_reset = per_agent_reset
         self._init_net()
         self.to(DEVICE)
         self._reset()
@@ -537,7 +592,10 @@ class NCLMMultiAgentPolicy(NCMultiAgentPolicy):
             for i in range(self.n_agent):
                 if i not in self.groups:
                     out = self.actor_heads[i](hs[i])
-                    ps[i] = F.softmax(out, dim=1).cpu().squeeze().detach().numpy() if detach else out  # raw logits
+                    if detach:
+                        ps[i] = F.softmax(out, dim=1).cpu().squeeze().detach().numpy()
+                    else:
+                        ps[i] = F.log_softmax(out, dim=1)
         else:
             device = hs[0].device if len(hs) else DEVICE
             for i in range(self.n_agent):
@@ -551,7 +609,10 @@ class NCLMMultiAgentPolicy(NCMultiAgentPolicy):
                     else:
                         h_i = hs[i]
                     out = self.actor_heads[i](h_i)
-                    ps[i] = F.softmax(out, dim=1).cpu().squeeze().detach().numpy() if detach else out  # raw logits
+                    if detach:
+                        ps[i] = F.softmax(out, dim=1).cpu().squeeze().detach().numpy()
+                    else:
+                        ps[i] = F.log_softmax(out, dim=1)
         return ps
 
 

@@ -1,0 +1,13 @@
+CUDA Available: True
+Available Devices: 1
+Current Device: 0
+Device Name: NVIDIA GeForce RTX 3070 Ti
+Traceback (most recent call last):
+  File "/workspace/host/my_deeprl_network_ori_test_0817_v0_dp_decay_arch_improved_py3.11_torch2.7/test.py", line 22, in <module>
+    from agents.models import IA2C, IA2C_FP, MA2C_NC, IA2C_CU, MA2C_CNET, MA2C_DIAL, MA2C_NCLM
+  File "/workspace/host/my_deeprl_network_ori_test_0817_v0_dp_decay_arch_improved_py3.11_torch2.7/agents/models.py", line 11, in <module>
+    from agents.policies import (LstmPolicy, FPPolicy, ConsensusPolicy, NCMultiAgentPolicy,
+  File "/workspace/host/my_deeprl_network_ori_test_0817_v0_dp_decay_arch_improved_py3.11_torch2.7/agents/policies.py", line 58
+    return self.critic_head(h).squeeze()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: 'return' outside function
