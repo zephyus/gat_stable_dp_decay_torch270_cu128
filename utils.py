@@ -374,10 +374,31 @@ class Trainer():
                     else:
                         current_gat_dropout = self.gat_dropout_final
                     current_gat_dropout = max(self.gat_dropout_final, current_gat_dropout)
-                    if hasattr(self.model, 'policy') and hasattr(self.model.policy, 'gat_layer'):
-                        from agents.gat import GraphAttention
-                        if isinstance(self.model.policy.gat_layer, GraphAttention):
-                            self.model.policy.gat_layer.dropout = current_gat_dropout
+                    # Update GAT dropout dynamically (supports GraphAttention and MultiHeadGATv2Dense)
+                    if hasattr(self.model, 'policy'):
+                        from agents.gat import GraphAttention, MultiHeadGATv2Dense
+
+                        def _apply_dropout_to_policy(pol, p):
+                            if hasattr(pol, 'gat_layer'):
+                                layer = pol.gat_layer
+                                # Single-head legacy GAT
+                                if isinstance(layer, GraphAttention):
+                                    layer.dropout = p
+                                # Multi-head GATv2: update both feature and attention dropouts
+                                elif isinstance(layer, MultiHeadGATv2Dense):
+                                    # nn.Dropout stores prob on attribute `p`
+                                    if hasattr(layer, 'attn_dropout') and hasattr(layer.attn_dropout, 'p'):
+                                        layer.attn_dropout.p = p
+                                    if hasattr(layer, 'feat_dropout') and hasattr(layer.feat_dropout, 'p'):
+                                        layer.feat_dropout.p = p
+
+                        policy_obj = self.model.policy
+                        # Some algorithms keep a ModuleList of per-agent policies
+                        if isinstance(policy_obj, (list, tuple, torch.nn.ModuleList)):
+                            for pol in policy_obj:
+                                _apply_dropout_to_policy(pol, current_gat_dropout)
+                        else:
+                            _apply_dropout_to_policy(policy_obj, current_gat_dropout)
                     if self.summary_writer and (current_step % self.global_counter.log_step == 0):
                         self.summary_writer.add_scalar('train/gat_dropout', current_gat_dropout, current_step)
 
