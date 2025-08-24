@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from agents.utils import batch_to_seq, init_layer, one_hot, run_rnn, DEVICE
-from agents.gat import GraphAttention
+from agents.gat import GraphAttention, MultiHeadGATv2Dense
 
 
 class Policy(nn.Module):
@@ -185,11 +185,38 @@ class NCMultiAgentPolicy(Policy):
         self.n_h = n_h
         self.model_config = model_config
         self._init_net()
-        # allocate zero_pad before moving to device for consistent placement
-        self.zero_pad = nn.Parameter(torch.zeros(1, 2 * self.n_fc, device=DEVICE), requires_grad=False)
+        # Register buffers: adj, zero_pad, neighbor indices (move with .to())
+        adj = torch.tensor(self.neighbor_mask, dtype=torch.float32)
+        adj = adj + torch.eye(self.n_agent, dtype=torch.float32)
+        self.register_buffer('adj', adj)
+
+        self.register_buffer('zero_pad', torch.zeros(1, 2 * self.n_fc))
+
+        # Pack neighbor indices into padded matrix and degrees for fast indexing
+        idx_list = [torch.from_numpy(np.where(self.neighbor_mask[i])[0]).long() for i in range(self.n_agent)]
+        max_deg = max((len(t) for t in idx_list), default=0)
+        max_deg = max(1, max_deg)  # ensure at least 1 column for shape stability
+        neighbor_index = torch.full((self.n_agent, max_deg), -1, dtype=torch.long)
+        for i, t in enumerate(idx_list):
+            if t.numel() > 0:
+                neighbor_index[i, : t.numel()] = t
+        neighbor_deg = torch.tensor([len(t) for t in idx_list], dtype=torch.long)
+        self.register_buffer('neighbor_index', neighbor_index)
+        self.register_buffer('neighbor_deg', neighbor_deg)
         self.latest_attention_scores = None
         use_gat_env_value = os.getenv('USE_GAT', '1')
         self.use_gat = use_gat_env_value == '1'
+        # Step 2: Pre-LN + Residual + Post-LN around GATv2 (dense)
+        # Optional config toggles (default: enabled)
+        self._gat_pre_ln_enabled = True
+        self._gat_post_ln_enabled = True
+        self._gat_residual_enabled = True
+        if self.model_config is not None:
+            self._gat_pre_ln_enabled = self.model_config.getboolean('gat_pre_ln', True)
+            self._gat_post_ln_enabled = self.model_config.getboolean('gat_post_ln', True)
+            self._gat_residual_enabled = self.model_config.getboolean('gat_residual', True)
+        self.pre_ln = nn.LayerNorm(3 * self.n_fc) if self._gat_pre_ln_enabled else nn.Identity()
+        self.post_ln = nn.LayerNorm(3 * self.n_fc) if self._gat_post_ln_enabled else nn.Identity()
         if not self.use_gat:
             self.gat_layer = nn.Identity()
         self.to(DEVICE)
@@ -221,7 +248,7 @@ class NCMultiAgentPolicy(Policy):
         if summary_writer is not None:
             self._update_tensorboard(summary_writer, global_step)
             if self.use_gat and self.latest_attention_scores is not None:
-                mask = self.adj.to(self.latest_attention_scores.device) > 0
+                mask = self.adj > 0
                 scores = self.latest_attention_scores[mask]
                 if scores.numel() > 0:
                     summary_writer.add_histogram('GAT/attention_scores', scores.detach().cpu().numpy(), global_step)
@@ -243,7 +270,10 @@ class NCMultiAgentPolicy(Policy):
         device = h.device
         x = x.to(device)
         p = p.to(device)
-        js = torch.from_numpy(np.where(self.neighbor_mask[i])[0]).long().to(device)
+        deg = int(self.neighbor_deg[i].item())
+        js = self.neighbor_index[i, :deg].to(device)
+        # Development-time guard to detect neighbor mismatch
+        assert deg == n_n, f"neighbor_deg ({deg}) != n_n ({n_n}) for agent {i}"
         m_i = torch.index_select(h, 0, js).view(1, self.n_h * n_n)
         p_i = torch.index_select(p, 0, js)
         nx_i = torch.index_select(x, 0, js)
@@ -311,10 +341,26 @@ class NCMultiAgentPolicy(Policy):
         self.na_ls_ls = []
         self.n_n_ls = []
         gat_dropout_init = 0.1
+        gat_feat_drop = 0.2
+        gat_attn_drop = 0.2
+        gat_heads = 6
         if self.model_config:
             gat_dropout_init = self.model_config.getfloat('gat_dropout_init', 0.2)
-        self.gat_layer = GraphAttention(3 * self.n_fc, 3 * self.n_fc, dropout=gat_dropout_init, alpha=0.2)
-        self.adj = torch.tensor(self.neighbor_mask, dtype=torch.float32) + torch.eye(self.neighbor_mask.shape[0])
+            gat_feat_drop = self.model_config.getfloat('gat_feat_drop', gat_dropout_init)
+            gat_attn_drop = self.model_config.getfloat('gat_attn_drop', gat_dropout_init)
+            gat_heads = self.model_config.getint('gat_heads', 6)
+        # Replace single-head with multi-head GATv2 dense; keep in/out dim = 3*n_fc
+        self.gat_layer = MultiHeadGATv2Dense(
+            in_dim=3 * self.n_fc,
+            out_dim=3 * self.n_fc,
+            heads=gat_heads,
+            concat=True,
+            negative_slope=0.2,
+            feat_drop=gat_feat_drop,
+            attn_drop=gat_attn_drop,
+            bias=True,
+            share_weights=False,
+        )
         for i in range(self.n_agent):
             n_n, n_ns, n_na, ns_ls, na_ls = self._get_neighbor_dim(i)
             self.ns_ls_ls.append(ns_ls)
@@ -363,7 +409,8 @@ class NCMultiAgentPolicy(Policy):
             p = p.to(device).squeeze(0)
             s_list = []
             for i in range(self.n_agent):
-                n_n = int(self.neighbor_mask[i].sum().item())
+                # unify neighbor count from buffer
+                n_n = int(self.neighbor_deg[i].item())
                 if n_n:
                     s = self._get_comm_s(i, n_n, x, h, p)
                 else:
@@ -379,7 +426,10 @@ class NCMultiAgentPolicy(Policy):
                 s_list.append(s.squeeze(0))
             s_all = torch.stack(s_list, dim=0)
             if self.use_gat:
-                s_all, attention_scores = self.gat_layer(s_all, self.adj.to(x.device))
+                res = s_all
+                s_all = self.pre_ln(s_all)
+                s_all, attention_scores = self.gat_layer(s_all, self.adj)
+                s_all = self.post_ln(s_all + (res if self._gat_residual_enabled else 0))
                 self.latest_attention_scores = attention_scores.detach()
             else:
                 s_all = self.gat_layer(s_all)
@@ -401,9 +451,11 @@ class NCMultiAgentPolicy(Policy):
         vs = []
         device = hs[0].device if len(hs) else DEVICE
         for i in range(self.n_agent):
-            n_n = self.n_n_ls[i]
+            n_n = int(self.neighbor_deg[i].item())
+            assert n_n == self.n_n_ls[i], f"neighbor_deg ({n_n}) != n_n_ls ({self.n_n_ls[i]}) for agent {i}"
             if n_n:
-                js = torch.from_numpy(np.where(self.neighbor_mask[i])[0]).long().to(device)
+                deg = int(self.neighbor_deg[i].item())
+                js = self.neighbor_index[i, :deg].to(device)
                 na_i = torch.index_select(actions, 0, js)
                 na_i_ls = [one_hot(na_i[j], self.na_ls_ls[i][j], device=device) for j in range(n_n)]
                 h_i = torch.cat([hs[i]] + na_i_ls, dim=1)
